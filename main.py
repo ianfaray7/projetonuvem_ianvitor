@@ -60,7 +60,6 @@ def logar(user: Login, db: Session = Depends(get_db)):
     return {"message": "Login realizado com sucesso"}
 
 @app.get("/consultar")
-@app.get("/cotacoes/dolar")
 def get_usd_rates(db: Session = Depends(get_db)):
     """Retorna as últimas 10 cotações do dólar (USD_BRL)"""
     try:
