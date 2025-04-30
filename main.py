@@ -49,9 +49,7 @@ def logar(user: Login, db: Session = Depends(get_db)):
     
     if db_user is None:
         raise HTTPException(status_code=404, detail="Email não encontrado")
-    
+
     if not pwd_context.verify(user.senha, db_user.senha):
-        raise HTTPException(status_code=401, detail="Senha incorreta")
-    
-    # Return success response
+        raise HTTPException(status_code=401, detail="Senha incorreta")    
     return {"message": "Login realizado com sucesso"}
