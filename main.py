@@ -60,38 +60,39 @@ def logar(user: Login, db: Session = Depends(get_db)):
     return {"message": "Login realizado com sucesso"}
 
 @app.get("/consultar")
-def get_rates(db: Session = Depends(get_db)):
-    """Endpoint que retorna as últimas cotações"""
+@app.get("/cotacoes/dolar")
+def get_usd_rates(db: Session = Depends(get_db)):
+    """Retorna as últimas 10 cotações do dólar (USD_BRL)"""
     try:
-        new_data = scrape_currency_data(db)
+        # 1. Atualiza com dados mais recentes (opcional)
+        scrape_currency_data(db)
         
-        if not new_data:
-            db_data = db.query(FinancialData).order_by(FinancialData.last_updated.desc()).limit(2).all()
-            if not db_data:
-                raise HTTPException(status_code=404, detail="Nenhum dado disponível")
-            return {"data": [{"pair": d.currency_pair, "value": d.value} for d in db_data]}
+        # 2. Busca as últimas 10 cotações do banco
+        usd_rates = db.query(FinancialData)\
+                     .filter(FinancialData.currency_pair == "USD_BRL")\
+                     .order_by(FinancialData.last_updated.desc())\
+                     .limit(10)\
+                     .all()
         
-        for data in new_data:
-            # Verifica se já existe registro para este par de moedas
-            existing = db.query(FinancialData)\
-                       .filter(FinancialData.currency_pair == data.currency_pair)\
-                       .order_by(FinancialData.last_updated.desc())\
-                       .first()
-            
-            if existing:
-                existing.value = data.value
-            else:
-                db.add(data)
+        if not usd_rates:
+            raise HTTPException(
+                status_code=404,
+                detail="Nenhuma cotação do dólar encontrada no banco de dados"
+            )
         
-        db.commit()
-        
-        # Retorna os dados mais recentes
-        latest = db.query(FinancialData)\
-                 .order_by(FinancialData.last_updated.desc())\
-                 .limit(2)\
-                 .all()
-        
-        return {"data": [{"pair": d.currency_pair, "value": d.value} for d in latest]}
+        # 3. Formata a resposta
+        return {
+            "ultima_consulta": datetime.now().isoformat(),
+            "cotacoes": [
+                {
+                    "valor": rate.value,
+                    "data": rate.last_updated.isoformat()
+                } for rate in usd_rates
+            ]
+        }
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro ao processar a requisição: {str(e)}"
+        )
