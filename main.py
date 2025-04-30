@@ -2,11 +2,11 @@ from fastapi import Depends, FastAPI, HTTPException, status
 from sqlalchemy.orm import Session
 from passlib.context import CryptContext
 from database import Base, engine, SessionLocal
-from models import User, BovespaData
+from models import User, FinancialData
 from pydantic import BaseModel
-from .scraper import scrape_bovespa_data
+from scraper import scrape_currency_data
 from typing import List
-from datetime import datetime
+from datetime import datetime, date
 
 Base.metadata.create_all(bind=engine)
 
@@ -31,13 +31,7 @@ class Login(BaseModel):
     email: str
     senha: str
 
-class BovespaResponse(BaseModel):
-    Date: str
-    Open: float
-    High: float
-    Low: float
-    Close: float
-    Volume: int
+
 app = FastAPI()
 
 @app.post("/registrar")
@@ -65,64 +59,39 @@ def logar(user: Login, db: Session = Depends(get_db)):
         raise HTTPException(status_code=401, detail="Senha incorreta")    
     return {"message": "Login realizado com sucesso"}
 
-@app.get("/consultar", response_model=List[BovespaResponse])
-def consultar_bovespa(db: Session = Depends(get_db)):
+@app.get("/consultar")
+def get_rates(db: Session = Depends(get_db)):
+    """Endpoint que retorna as últimas cotações"""
     try:
-        # Obtém dados via scraping
-        scraped_data = scrape_bovespa_data()
+        new_data = scrape_currency_data(db)
         
-        # Converte os dados para o formato do modelo SQLAlchemy e salva no banco
-        for data in scraped_data:
-            # Verifica se a data já existe no banco
-            existing_data = db.query(BovespaData).filter(
-                BovespaData.date == datetime.strptime(data.Date, "%Y-%m-%d").date()
-            ).first()
+        if not new_data:
+            db_data = db.query(FinancialData).order_by(FinancialData.last_updated.desc()).limit(2).all()
+            if not db_data:
+                raise HTTPException(status_code=404, detail="Nenhum dado disponível")
+            return {"data": [{"pair": d.currency_pair, "value": d.value} for d in db_data]}
+        
+        for data in new_data:
+            # Verifica se já existe registro para este par de moedas
+            existing = db.query(FinancialData)\
+                       .filter(FinancialData.currency_pair == data.currency_pair)\
+                       .order_by(FinancialData.last_updated.desc())\
+                       .first()
             
-            if not existing_data:
-                # Se não existir, cria um novo registro
-                db_data = BovespaData(
-                    date=datetime.strptime(data.Date, "%Y-%m-%d").date(),
-                    open_value=data.Open,
-                    high=data.High,
-                    low=data.Low,
-                    close=data.Close,
-                    volume=data.Volume
-                )
-                db.add(db_data)
+            if existing:
+                existing.value = data.value
+            else:
+                db.add(data)
         
         db.commit()
         
-        # Retorna os dados mais recentes do banco (últimos 10 dias)
-        db_data = db.query(BovespaData).order_by(BovespaData.date.desc()).limit(10).all()
+        # Retorna os dados mais recentes
+        latest = db.query(FinancialData)\
+                 .order_by(FinancialData.last_updated.desc())\
+                 .limit(2)\
+                 .all()
         
-        return [
-            BovespaResponse(
-                Date=data.date.strftime("%Y-%m-%d"),
-                Open=data.open_value,
-                High=data.high,
-                Low=data.low,
-                Close=data.close,
-                Volume=data.volume
-            ) for data in db_data
-        ]
+        return {"data": [{"pair": d.currency_pair, "value": d.value} for d in latest]}
         
     except Exception as e:
-        # Em caso de erro, tenta retornar dados do banco
-        db_data = db.query(BovespaData).order_by(BovespaData.date.desc()).limit(10).all()
-        if db_data:
-            return [
-                BovespaResponse(
-                    Date=data.date.strftime("%Y-%m-%d"),
-                    Open=data.open_value,
-                    High=data.high,
-                    Low=data.low,
-                    Close=data.close,
-                    Volume=data.volume
-                ) for data in db_data
-            ]
-        
-        # Se não houver dados no banco, retorna erro
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Não foi possível obter dados da Bovespa"
-        )
+        raise HTTPException(status_code=500, detail=str(e))
