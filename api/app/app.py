@@ -6,11 +6,18 @@ from jose import JWTError, jwt
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from pydantic import BaseModel
-from database import SessionLocal, engine, Base
-from models import User, FinancialData
-from scraper import scrape_currency_data
-from config import settings
+from .database import SessionLocal, engine, Base
+from .models import User, FinancialData
+import requests
+from bs4 import BeautifulSoup
+import re
+from dotenv import load_dotenv
 import os
+load_dotenv()
+algorithm = os.getenv("ALGORITHM")
+secret_key = os.getenv("SECRET_KEY")
+token_expire_minutes = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES"))
+
 Base.metadata.create_all(bind=engine)
 
 pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
@@ -64,9 +71,9 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     if expires_delta:
         expire = datetime.now(timezone.utc) + expires_delta
     else:
-        expire = datetime.now(timezone.utc) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+        expire = datetime.now(timezone.utc) + timedelta(minutes=token_expire_minutes)
     to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+    encoded_jwt = jwt.encode(to_encode, secret_key, algorithm=algorithm)
     return encoded_jwt
 
 async def get_current_user(
@@ -79,7 +86,7 @@ async def get_current_user(
         headers={"WWW-Authenticate": "Bearer"},
     )
     try:
-        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        payload = jwt.decode(token, secret_key, algorithms=[algorithm])
         email: str = payload.get("sub")
         if email is None:
             raise credentials_exception
@@ -113,7 +120,7 @@ def registrar(usuario: UsuarioCreate, db: Session = Depends(get_db)):
     
     access_token = create_access_token(
         data={"sub": usuario.email},
-        expires_delta=timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+        expires_delta=timedelta(minutes=token_expire_minutes)
     )
     return {"access_token": access_token, "token_type": "bearer"}
 
@@ -132,46 +139,47 @@ def login(
     
     access_token = create_access_token(
         data={"sub": user.email},
-        expires_delta=timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+        expires_delta=timedelta(minutes=token_expire_minutes)
     )
     return {"access_token": access_token, "token_type": "bearer"}
 
 @app.get("/consultar")
 async def get_usd_rates(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user)  # <- Isso já exige autenticação
 ):
-    """Retorna as últimas 10 cotações do dólar (USD_BRL) - Requer autenticação"""
+    """Retorna as cotações do dólar (USD_BRL) em tempo real - Requer autenticação"""
     try:
-        # 1. Atualiza com dados mais recentes (opcional)
-        scrape_currency_data(db)
+        # Busca diretamente no site
+        url = "https://www.x-rates.com/table/?from=USD&amount=1"
+        response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10)
+        soup = BeautifulSoup(response.text, 'html.parser')
         
-        # 2. Busca as últimas 10 cotações do banco
-        usd_rates = db.query(FinancialData)\
-                     .filter(FinancialData.currency_pair == "USD_BRL")\
-                     .order_by(FinancialData.last_updated.desc())\
-                     .limit(10)\
-                     .all()
+        links = soup.find_all('a', href=re.compile(r'from=USD&to=BRL'))
         
-        if not usd_rates:
+        if not links:
             raise HTTPException(
                 status_code=404,
-                detail="Nenhuma cotação do dólar encontrada"
+                detail="Nenhuma cotação do dólar encontrada no site"
             )
         
+        current_time = datetime.now(timezone.utc)
+        rates = [
+            {
+                "valor": float(link.text.strip()),
+                "data": current_time.isoformat()
+            } for link in links
+        ]
+        
         return {
-            "ultima_consulta": datetime.now().isoformat(),
-            "cotacoes": [
-                {
-                    "valor": rate.value,
-                    "data": rate.last_updated.isoformat()
-                } for rate in usd_rates
-            ]
+            "ultima_consulta": current_time.isoformat(),
+            "cotacoes": rates
         }
         
-    except HTTPException:
-        # Já trata erros conhecidos (como 404)
-        raise
+    except requests.RequestException as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Erro ao acessar o site de cotações: {str(e)}"
+        )
     except Exception as e:
         raise HTTPException(
             status_code=500,
