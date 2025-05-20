@@ -11,3 +11,4 @@ pydantic-settings==2.1.0
 python-multipart==0.0.20
 mysql-connector-python==9.3.0
 argon2-cffi==21.3.0
+websockets==15.0.1

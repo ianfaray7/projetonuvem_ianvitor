@@ -13,6 +13,8 @@ from bs4 import BeautifulSoup
 import re
 from dotenv import load_dotenv
 import os
+import socket
+
 load_dotenv()
 algorithm = os.getenv("ALGORITHM")
 secret_key = os.getenv("SECRET_KEY")
@@ -185,3 +187,13 @@ async def get_usd_rates(
             status_code=500,
             detail=f"Erro interno: {str(e)}"
         )
+        
+        
+
+@app.get("/health-check")
+def health_check():
+    return {
+        "statusCode": 200,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "hostname": socket.gethostname()
+    }
